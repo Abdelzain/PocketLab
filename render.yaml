@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: pocketlab
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: MAX_CONCURRENT_DOCKS
+        value: "2"
+      - key: SESSION_TTL_SECONDS
+        value: "3600"
