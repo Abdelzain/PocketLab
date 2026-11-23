@@ -28,7 +28,8 @@ COPY backend/ ./backend/
 COPY --from=frontend-builder /frontend/dist ./frontend_dist
 
 ENV PORT=10000
-ENV MAX_CONCURRENT_DOCKS=2
+ENV MAX_CONCURRENT_DOCKS=1
+ENV VINA_CPU_THREADS=1
 ENV SESSION_TTL_SECONDS=3600
 
 EXPOSE 10000
