@@ -1,5 +1,26 @@
 import type { GridBox } from '../types/docking';
 
+const WEBINA_CDN_BASE = 'https://cdn.jsdelivr.net/gh/durrantlab/webina@main/src/Webina';
+
+let cachedWorkerBlobUrl: string | null = null;
+
+async function getWorkerBlobUrl(): Promise<string> {
+  if (cachedWorkerBlobUrl) return cachedWorkerBlobUrl;
+  const resp = await fetch(`${WEBINA_CDN_BASE}/vina.worker.js`);
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch Webina worker (${resp.status})`);
+  }
+  const raw = await resp.text();
+  // Ensure worker fallback import points to jsDelivr CDN
+  const patched = raw.replace(
+    /["']\.\/vina\.1\.0\.5\.js["']/g,
+    `"${WEBINA_CDN_BASE}/vina.js"`
+  );
+  const blob = new Blob([patched], { type: 'application/javascript' });
+  cachedWorkerBlobUrl = URL.createObjectURL(blob);
+  return cachedWorkerBlobUrl;
+}
+
 export interface WebinaRunOptions {
   box: GridBox;
   exhaustiveness?: number;
@@ -34,8 +55,8 @@ export async function runWebinaInBrowser(
     );
   }
 
-  // Dynamic runtime import from /webina/vina.js (served from public/webina/)
-  const modUrl = '/webina/vina.js';
+  const workerBlobUrl = await getWorkerBlobUrl();
+  const modUrl = `${WEBINA_CDN_BASE}/vina.js`;
   const mod: any = await import(/* @vite-ignore */ modUrl);
   const WEBINA_MODULE = mod.default;
 
@@ -60,7 +81,11 @@ export async function runWebinaInBrowser(
     try {
       const webinaMod = new WEBINA_MODULE({
         noInitialRun: true,
-        locateFile: (path: string) => `/webina/${path}`,
+        mainScriptUrlOrBlob: modUrl,
+        locateFile: (path: string) => {
+          if (path.endsWith('vina.worker.js')) return workerBlobUrl;
+          return `${WEBINA_CDN_BASE}/${path}`;
+        },
         preRun: [
           function (instance: any) {
             instance.FS.writeFile('/receptor.pdbqt', receptorPdbqt);
