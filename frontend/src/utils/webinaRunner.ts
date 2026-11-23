@@ -79,7 +79,7 @@ export async function runWebinaInBrowser(
     };
 
     try {
-      const webinaMod = new WEBINA_MODULE({
+      const moduleConfig = {
         noInitialRun: true,
         mainScriptUrlOrBlob: modUrl,
         locateFile: (path: string) => {
@@ -117,9 +117,17 @@ export async function runWebinaInBrowser(
         onAbort: (what: any) => {
           finishErr(`AutoDock Vina WASM aborted: ${what}`);
         },
-      });
+      };
 
-      webinaMod.ready
+      const webinaMod = WEBINA_MODULE(moduleConfig);
+      const readyPromise: Promise<any> =
+        webinaMod && typeof webinaMod.then === 'function'
+          ? webinaMod
+          : webinaMod && webinaMod.ready && typeof webinaMod.ready.then === 'function'
+          ? webinaMod.ready
+          : Promise.resolve(webinaMod);
+
+      readyPromise
         .then((instance: any) => {
           const defaultCpu = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
           const cpu = options.cpu ?? defaultCpu;
