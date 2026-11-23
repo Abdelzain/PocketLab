@@ -1,6 +1,7 @@
 import io
 import subprocess
 import shutil
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import httpx
 import numpy as np
@@ -250,14 +251,39 @@ def _pdb_to_smiles(pdb_text: str) -> Optional[str]:
     return None
 
 
+def _sanitize_receptor_pdbqt(pdbqt_path: str) -> None:
+    """Ensure rigid receptor PDBQT has no ligand tree tags and uses valid AutoDock metal types."""
+    metal_fix = {"ZN": "Zn", "MG": "Mg", "CA": "Ca", "FE": "Fe", "MN": "Mn", "CU": "Cu"}
+    p = Path(pdbqt_path)
+    if not p.exists():
+        return
+    clean_lines = []
+    for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if line.startswith(("ROOT", "ENDROOT", "BRANCH", "ENDBRANCH", "TORSDOF")):
+            continue
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 77:
+            ad_type = line[77:79].strip()
+            if ad_type.upper() in metal_fix:
+                fixed = metal_fix[ad_type.upper()]
+                line = line[:77] + f"{fixed:<2s}" + line[79:]
+        clean_lines.append(line)
+    p.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+
+
 def _convert_receptor_to_pdbqt(pdb_path: str, pdbqt_path: str, ph: float = 7.4) -> Tuple[bool, Optional[str]]:
-    # 1. Try OpenBabel CLI
+    def _has_valid_output() -> bool:
+        p = Path(pdbqt_path)
+        return p.exists() and p.stat().st_size > 100
+
+    # 1. Try OpenBabel CLI (with Gasteiger charges, then retry without Gasteiger for metalloproteins like Zn2+)
     obabel_exe = shutil.which("obabel")
     if obabel_exe:
-        cmd = [obabel_exe, pdb_path, "-O", pdbqt_path, "-xr", "-p", str(ph), "--partialcharge", "gasteiger"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode == 0:
-            return True, None
+        for extra_args in (["--partialcharge", "gasteiger"], []):
+            cmd = [obabel_exe, pdb_path, "-O", pdbqt_path, "-xr", "-p", str(ph), *extra_args]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0 and _has_valid_output():
+                _sanitize_receptor_pdbqt(pdbqt_path)
+                return True, None
 
     # 2. Try OpenBabel Python API (pybel)
     try:
@@ -269,9 +295,13 @@ def _convert_receptor_to_pdbqt(pdb_path: str, pdbqt_path: str, ph: float = 7.4) 
         conv.ReadFile(mol, pdb_path)
         mol.AddHydrogens(False, True, ph)
         conv.WriteFile(mol, pdbqt_path)
-        return True, None
+        if _has_valid_output():
+            _sanitize_receptor_pdbqt(pdbqt_path)
+            return True, None
     except Exception as exc:
         return False, f"OpenBabel PDBQT conversion unavailable ({exc}); using fallback writer."
+
+    return False, "OpenBabel produced empty PDBQT (likely due to metal ion); using fallback writer."
 
 
 def _write_fallback_pdbqt(pdb_text: str, pdbqt_path: str) -> None:
