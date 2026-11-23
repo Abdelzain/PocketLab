@@ -47,6 +47,17 @@ def main() -> None:
         from app.models import DockingRunRequest
         from app.services import docking_service
         res = docking_service.run_docking(DockingRunRequest(**payload))
+    elif action == "docking_inputs":
+        from app.services import docking_service
+        res = docking_service.get_docking_inputs(payload["session_id"])
+    elif action == "docking_ingest":
+        from app.models import DockingIngestRequest
+        from app.services import docking_service
+        res = docking_service.ingest_browser_docking(DockingIngestRequest(**payload))
+    elif action == "docking_ingest_redock":
+        from app.models import RedockIngestRequest
+        from app.services import docking_service
+        res = docking_service.ingest_browser_redock(RedockIngestRequest(**payload))
     elif action == "analysis_compare":
         from app.models import ComparativeAnalysisRequest
         from app.services import analysis_service

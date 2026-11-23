@@ -15,10 +15,13 @@ VINA_CPU_THREADS = int(os.getenv("VINA_CPU_THREADS", "1"))
 SMINA_LOW_RAM = os.getenv("SMINA_LOW_RAM", "0") == "1"
 
 from app.models import (
+    DockingIngestRequest,
+    DockingInputsResponse,
     DockingPose,
     DockingRunRequest,
     DockingRunResponse,
     GridBox,
+    RedockIngestRequest,
     RedockValidationRequest,
     RedockValidationResponse,
 )
@@ -400,6 +403,130 @@ def run_docking(req: DockingRunRequest) -> DockingRunResponse:
     native_score = meta.get("native_score")
     if native_score is None and job_store.read_text(req.session_id, "native_ligand.pdb"):
         native_score = _score_native_in_place(req.session_id, req.box)
+
+    job_store.save_meta(
+        req.session_id,
+        {
+            "native_score": native_score,
+            "poses_affinities": {str(p.mode): p.affinity for p in poses},
+            "last_box": req.box.model_dump(),
+            "last_exhaustiveness": req.exhaustiveness,
+        },
+    )
+
+    return DockingRunResponse(
+        session_id=req.session_id,
+        ligand_name=meta.get("ligand_name", "Query Ligand"),
+        poses=poses,
+        native_score=native_score,
+        box=req.box,
+        exhaustiveness=req.exhaustiveness,
+    )
+
+
+def get_docking_inputs(session_id: str) -> DockingInputsResponse:
+    rec_pdbqt = job_store.read_text(session_id, "receptor.pdbqt")
+    if not rec_pdbqt:
+        raise FileNotFoundError("Prepared receptor not found. Complete Step 1 first.")
+
+    query_pdbqt = job_store.read_text(session_id, "query_ligand.pdbqt")
+    native_pdbqt = job_store.read_text(session_id, "native_ligand.pdbqt")
+    if not native_pdbqt and job_store.read_text(session_id, "native_ligand.pdb"):
+        try:
+            _prepare_native_pdbqt(session_id)
+            native_pdbqt = job_store.read_text(session_id, "native_ligand.pdbqt")
+        except Exception:
+            native_pdbqt = None
+
+    meta = job_store.load_meta(session_id)
+    return DockingInputsResponse(
+        session_id=session_id,
+        ligand_name=meta.get("ligand_name", "Query Ligand"),
+        receptor_pdbqt=rec_pdbqt,
+        query_ligand_pdbqt=query_pdbqt,
+        native_ligand_pdbqt=native_pdbqt,
+    )
+
+
+def _extract_energies_from_output(stdout: str, poses_pdbqt: str) -> List[Tuple[float, float, float]]:
+    energies = _parse_vina_cli_table(stdout)
+    if not energies:
+        for line in poses_pdbqt.splitlines():
+            if line.startswith("REMARK VINA RESULT:"):
+                parts = line.split(":")[1].split()
+                if len(parts) >= 3:
+                    energies.append(
+                        (round(float(parts[0]), 2), round(float(parts[1]), 2), round(float(parts[2]), 2))
+                    )
+    return energies
+
+
+def ingest_browser_redock(req: RedockIngestRequest) -> RedockValidationResponse:
+    nat_pdb = job_store.read_text(req.session_id, "native_ligand.pdb")
+    if not nat_pdb:
+        raise FileNotFoundError("No native co-crystallized ligand available for redocking validation.")
+
+    models = _pdbqt_to_pdb_models(req.redocked_pdbqt)
+    if not models:
+        raise RuntimeError("Webina produced no poses during redocking validation.")
+
+    energies = _extract_energies_from_output(req.stdout, req.redocked_pdbqt)
+    redocked_affinity = energies[0][0] if energies else 0.0
+    best_pose_pdb = models[0]
+    rmsd = compute_symmetry_rmsd(nat_pdb, best_pose_pdb)
+    passed = rmsd <= 2.0
+
+    job_store.save_text(req.session_id, "redocked_native.pdb", best_pose_pdb)
+    job_store.save_meta(
+        req.session_id,
+        {
+            "redock_rmsd": rmsd,
+            "redock_passed": passed,
+            "native_score": req.native_score if req.native_score is not None else redocked_affinity,
+        },
+    )
+
+    msg = (
+        f"Validation PASSED: Redocked pose reproduces the experimental crystal pose with RMSD = {rmsd:.2f} Å (≤ 2.0 Å)."
+        if passed
+        else f"Validation WARNING: Redocked RMSD is {rmsd:.2f} Å (> 2.0 Å). Consider adjusting grid box size/center or checking protonation/waters."
+    )
+
+    return RedockValidationResponse(
+        session_id=req.session_id,
+        rmsd=rmsd,
+        passed=passed,
+        native_score=req.native_score if req.native_score is not None else redocked_affinity,
+        redocked_affinity=redocked_affinity,
+        redocked_pdb=best_pose_pdb,
+        message=msg,
+    )
+
+
+def ingest_browser_docking(req: DockingIngestRequest) -> DockingRunResponse:
+    models = _pdbqt_to_pdb_models(req.poses_pdbqt)
+    if not models:
+        raise RuntimeError("Webina produced no docking poses.")
+
+    energies = _extract_energies_from_output(req.stdout, req.poses_pdbqt)
+    while len(energies) < len(models):
+        energies.append((0.0, 0.0, 0.0))
+
+    poses: List[DockingPose] = []
+    for idx, (energy, pdb_block) in enumerate(zip(energies, models), start=1):
+        job_store.save_text(req.session_id, f"docked_pose_{idx}.pdb", pdb_block)
+        poses.append(
+            DockingPose(
+                mode=idx,
+                affinity=energy[0],
+                rmsd_lb=energy[1],
+                rmsd_ub=energy[2],
+                pdb_block=pdb_block,
+            )
+        )
+
+    meta = job_store.load_meta(req.session_id)
+    native_score = req.native_score if req.native_score is not None else meta.get("native_score")
 
     job_store.save_meta(
         req.session_id,

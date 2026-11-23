@@ -152,6 +152,30 @@ class DockingRunResponse(BaseModel):
     exhaustiveness: int
 
 
+class DockingInputsResponse(BaseModel):
+    session_id: str
+    ligand_name: str
+    receptor_pdbqt: str
+    query_ligand_pdbqt: Optional[str] = None
+    native_ligand_pdbqt: Optional[str] = None
+
+
+class DockingIngestRequest(BaseModel):
+    session_id: str
+    poses_pdbqt: str
+    stdout: str = ""
+    box: GridBox
+    exhaustiveness: int = 8
+    native_score: Optional[float] = None
+
+
+class RedockIngestRequest(BaseModel):
+    session_id: str
+    redocked_pdbqt: str
+    stdout: str = ""
+    native_score: Optional[float] = None
+
+
 class InteractionItem(BaseModel):
     interaction_type: Literal[
         "H-Bond",

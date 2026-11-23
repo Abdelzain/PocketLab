@@ -1,6 +1,5 @@
 # Lightweight, production-ready Dockerfile for PocketLab
-# Optimized for 512 MB RAM Free Tiers (SnapDeploy / Render) and any cloud VPS
-# Uses smina (AutoDock Vina engine, ~35 MB RAM vs Vina 1.2's 550 MB lookup table)
+# AutoDock Vina runs directly in the user's browser via WebAssembly (Webina) -> 0 MB server RAM for docking!
 
 FROM node:22-slim AS frontend-builder
 WORKDIR /frontend
@@ -12,17 +11,12 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# Install OpenBabel, RDKit graphics deps, and low-RAM 64-bit Smina (Vina-compatible engine)
+# Install OpenBabel + RDKit graphics deps (no heavy server docking binary needed!)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
     openbabel \
     libxrender1 \
     libxext6 \
     libexpat1 \
-    && curl -L -o /usr/local/bin/vina "https://sourceforge.net/projects/smina/files/smina.static/download" \
-    && chmod +x /usr/local/bin/vina \
-    && /usr/local/bin/vina --version \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./requirements.txt
@@ -32,9 +26,7 @@ COPY backend/ ./backend/
 COPY --from=frontend-builder /frontend/dist ./frontend_dist
 
 ENV PORT=10000
-ENV MAX_CONCURRENT_DOCKS=1
-ENV VINA_CPU_THREADS=1
-ENV SMINA_LOW_RAM=1
+ENV MAX_CONCURRENT_DOCKS=2
 ENV SESSION_TTL_SECONDS=3600
 
 EXPOSE 10000

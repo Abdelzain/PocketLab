@@ -8,6 +8,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { isWebinaSupported, parseLocalAffinity, runWebinaInBrowser } from '../utils/webinaRunner';
 import type {
   GridBox,
   PocketCandidate,
@@ -66,8 +67,38 @@ export const ActiveSiteStep: React.FC<ActiveSiteStepProps> = ({
     setValidating(true);
     setError(null);
     try {
-      const res = await api.validateRedocking(sessionId, gridBox, 8);
-      onValidated(res);
+      if (isWebinaSupported()) {
+        const inputs = await api.getDockingInputs(sessionId);
+        if (!inputs.native_ligand_pdbqt) {
+          throw new Error('Native co-crystallized ligand PDBQT is not available for this session.');
+        }
+        let nativeScore: number | null = null;
+        try {
+          const scoreRun = await runWebinaInBrowser(
+            { box: gridBox, localOnly: true, cpu: 1 },
+            inputs.receptor_pdbqt,
+            inputs.native_ligand_pdbqt
+          );
+          nativeScore = parseLocalAffinity(scoreRun.stdout);
+        } catch {
+          // ignore local_only score error
+        }
+        const redockRun = await runWebinaInBrowser(
+          { box: gridBox, exhaustiveness: 8, numModes: 5 },
+          inputs.receptor_pdbqt,
+          inputs.native_ligand_pdbqt
+        );
+        const res = await api.ingestRedock({
+          session_id: sessionId,
+          redocked_pdbqt: redockRun.outPdbqt,
+          stdout: redockRun.stdout,
+          native_score: nativeScore,
+        });
+        onValidated(res);
+      } else {
+        const res = await api.validateRedocking(sessionId, gridBox, 8);
+        onValidated(res);
+      }
     } catch (err: any) {
       setError(err.message || 'Redocking validation failed');
     } finally {

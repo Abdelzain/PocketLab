@@ -101,6 +101,44 @@ export const api = {
     });
   },
 
+  getDockingInputs(session_id: string): Promise<{
+    session_id: string;
+    ligand_name: string;
+    receptor_pdbqt: string;
+    query_ligand_pdbqt?: string | null;
+    native_ligand_pdbqt?: string | null;
+  }> {
+    return request(`/api/docking/inputs/${encodeURIComponent(session_id)}`);
+  },
+
+  ingestDocking(payload: {
+    session_id: string;
+    poses_pdbqt: string;
+    stdout: string;
+    box: GridBox;
+    exhaustiveness: number;
+    native_score?: number | null;
+  }): Promise<DockingRunResponse> {
+    return request('/api/docking/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  ingestRedock(payload: {
+    session_id: string;
+    redocked_pdbqt: string;
+    stdout: string;
+    native_score?: number | null;
+  }): Promise<RedockValidationResponse> {
+    return request('/api/docking/ingest-redock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
   runDocking(
     session_id: string,
     box: GridBox,

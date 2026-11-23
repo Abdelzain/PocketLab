@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { BarChart3, Loader2, Play, Sparkles } from 'lucide-react';
+import { BarChart3, Cpu, Loader2, Play, Sparkles } from 'lucide-react';
 import { api } from '../api/client';
+import { isWebinaSupported, parseLocalAffinity, runWebinaInBrowser } from '../utils/webinaRunner';
 import type { DockingRunResponse, GridBox } from '../types/docking';
 
 interface DockingStepProps {
@@ -25,28 +26,79 @@ export const DockingStep: React.FC<DockingStepProps> = ({
   const [exhaustiveness, setExhaustiveness] = useState(8);
   const [numModes, setNumModes] = useState(9);
   const [running, setRunning] = useState(false);
+  const [statusText, setStatusText] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const handleRun = async () => {
     setRunning(true);
     setError(null);
     try {
-      const res = await api.runDocking(sessionId, gridBox, exhaustiveness, numModes);
-      onDockingComplete(res);
+      if (isWebinaSupported()) {
+        setStatusText('Loading prepared PDBQT structures...');
+        const inputs = await api.getDockingInputs(sessionId);
+        if (!inputs.query_ligand_pdbqt) {
+          throw new Error('Prepared query ligand not found. Complete Step 2 first.');
+        }
+
+        let nativeScore: number | null = null;
+        if (inputs.native_ligand_pdbqt) {
+          setStatusText('Scoring original co-crystallized ligand in-browser...');
+          try {
+            const nativeRun = await runWebinaInBrowser(
+              { box: gridBox, localOnly: true, cpu: 1 },
+              inputs.receptor_pdbqt,
+              inputs.native_ligand_pdbqt
+            );
+            nativeScore = parseLocalAffinity(nativeRun.stdout);
+          } catch {
+            // optional native local score
+          }
+        }
+
+        setStatusText('Running AutoDock Vina locally in your browser (WebAssembly)...');
+        const dockRun = await runWebinaInBrowser(
+          { box: gridBox, exhaustiveness, numModes },
+          inputs.receptor_pdbqt,
+          inputs.query_ligand_pdbqt
+        );
+
+        setStatusText('Processing poses & saving results...');
+        const res = await api.ingestDocking({
+          session_id: sessionId,
+          poses_pdbqt: dockRun.outPdbqt,
+          stdout: dockRun.stdout,
+          box: gridBox,
+          exhaustiveness,
+          native_score: nativeScore,
+        });
+        onDockingComplete(res);
+      } else {
+        setStatusText('Running AutoDock Vina on server...');
+        const res = await api.runDocking(sessionId, gridBox, exhaustiveness, numModes);
+        onDockingComplete(res);
+      }
     } catch (err: any) {
       setError(err.message || 'Docking execution failed');
     } finally {
       setRunning(false);
+      setStatusText('');
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="card-glass p-4 space-y-4">
-        <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-          <Play className="w-4 h-4 text-cyan-400" />
-          4. Run Molecular Docking (AutoDock Vina)
-        </h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Play className="w-4 h-4 text-cyan-400" />
+            4. Run Molecular Docking (AutoDock Vina)
+          </h2>
+          {isWebinaSupported() && (
+            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+              <Cpu className="w-3 h-3" /> In-Browser WASM Engine
+            </span>
+          )}
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
@@ -102,7 +154,7 @@ export const DockingStep: React.FC<DockingStepProps> = ({
           {running ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              Running AutoDock Vina... (this takes ~10–30s)
+              {statusText || 'Running AutoDock Vina...'}
             </>
           ) : (
             <>

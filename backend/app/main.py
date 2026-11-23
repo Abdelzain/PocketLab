@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from app.models import (
     ComparativeAnalysisRequest,
     ComparativeAnalysisResponse,
+    DockingIngestRequest,
+    DockingInputsResponse,
     DockingRunRequest,
     DockingRunResponse,
     LigandPrepareRequest,
@@ -27,6 +29,7 @@ from app.models import (
     ProteinInspectResponse,
     ProteinPrepareRequest,
     ProteinPrepareResponse,
+    RedockIngestRequest,
     RedockValidationRequest,
     RedockValidationResponse,
 )
@@ -101,6 +104,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_cross_origin_isolation_headers(request, call_next):
+    response = await call_next(request)
+    # Required for Webina (AutoDock Vina WebAssembly SharedArrayBuffer) while allowing external CDNs
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
+    return response
 
 
 class FetchPdbRequest(BaseModel):
@@ -232,6 +244,36 @@ async def run_docking(req: DockingRunRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Docking execution failed: {e}")
+
+
+@app.get("/api/docking/inputs/{session_id}", response_model=DockingInputsResponse)
+async def get_docking_inputs(session_id: str):
+    try:
+        return await run_in_threadpool(_run_isolated_worker, "docking_inputs", {"session_id": session_id})
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load docking inputs: {e}")
+
+
+@app.post("/api/docking/ingest", response_model=DockingRunResponse)
+async def ingest_docking(req: DockingIngestRequest):
+    try:
+        return await run_in_threadpool(_run_isolated_worker, "docking_ingest", req.model_dump())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process docking poses: {e}")
+
+
+@app.post("/api/docking/ingest-redock", response_model=RedockValidationResponse)
+async def ingest_redock(req: RedockIngestRequest):
+    try:
+        return await run_in_threadpool(_run_isolated_worker, "docking_ingest_redock", req.model_dump())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process redocking validation: {e}")
 
 
 @app.post("/api/analysis/compare", response_model=ComparativeAnalysisResponse)
