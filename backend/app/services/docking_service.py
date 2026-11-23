@@ -12,6 +12,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 
 VINA_CPU_THREADS = int(os.getenv("VINA_CPU_THREADS", "1"))
+SMINA_LOW_RAM = os.getenv("SMINA_LOW_RAM", "0") == "1"
 
 from app.models import (
     DockingPose,
@@ -234,14 +235,16 @@ def _run_vina_engine(
             "--center_x", str(box.center_x),
             "--center_y", str(box.center_y),
             "--center_z", str(box.center_z),
-            "--size_x", str(box.size_x),
-            "--size_y", str(box.size_y),
-            "--size_z", str(box.size_z),
-            "--exhaustiveness", str(exhaustiveness),
+            "--size_x", str(min(box.size_x, 22.0) if SMINA_LOW_RAM else box.size_x),
+            "--size_y", str(min(box.size_y, 22.0) if SMINA_LOW_RAM else box.size_y),
+            "--size_z", str(min(box.size_z, 22.0) if SMINA_LOW_RAM else box.size_z),
+            "--exhaustiveness", str(min(exhaustiveness, 8) if SMINA_LOW_RAM else exhaustiveness),
             "--num_modes", str(num_modes),
             "--cpu", str(VINA_CPU_THREADS),
             "--out", str(out_path),
         ]
+        if SMINA_LOW_RAM:
+            cmd.extend(["--approximation", "linear", "--factor", "10"])
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             raise RuntimeError(
@@ -284,23 +287,22 @@ def _score_native_in_place(session_id: str, box: GridBox) -> Optional[float]:
             vina_bin = _find_vina_binary()
             if not vina_bin:
                 return None
-            res = subprocess.run(
-                [
-                    vina_bin,
-                    "--receptor", rec_pdbqt,
-                    "--ligand", nat_pdbqt,
-                    "--center_x", str(box.center_x),
-                    "--center_y", str(box.center_y),
-                    "--center_z", str(box.center_z),
-                    "--size_x", str(box.size_x),
-                    "--size_y", str(box.size_y),
-                    "--size_z", str(box.size_z),
-                    "--cpu", str(VINA_CPU_THREADS),
-                    "--local_only",
-                ],
-                capture_output=True,
-                text=True,
-            )
+            local_cmd = [
+                vina_bin,
+                "--receptor", rec_pdbqt,
+                "--ligand", nat_pdbqt,
+                "--center_x", str(box.center_x),
+                "--center_y", str(box.center_y),
+                "--center_z", str(box.center_z),
+                "--size_x", str(min(box.size_x, 22.0) if SMINA_LOW_RAM else box.size_x),
+                "--size_y", str(min(box.size_y, 22.0) if SMINA_LOW_RAM else box.size_y),
+                "--size_z", str(min(box.size_z, 22.0) if SMINA_LOW_RAM else box.size_z),
+                "--cpu", str(VINA_CPU_THREADS),
+                "--local_only",
+            ]
+            if SMINA_LOW_RAM:
+                local_cmd.extend(["--approximation", "linear", "--factor", "10"])
+            res = subprocess.run(local_cmd, capture_output=True, text=True)
             for line in res.stdout.splitlines():
                 m = re.search(r"(?:Affinity|Estimated Free Energy of Binding)\s*:\s*(-?\d+\.\d+)", line)
                 if m:
