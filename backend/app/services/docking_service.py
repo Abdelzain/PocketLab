@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ import numpy as np
 from Bio.PDB import PDBParser
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
+
+VINA_CPU_THREADS = int(os.getenv("VINA_CPU_THREADS", "1"))
 
 from app.models import (
     DockingPose,
@@ -198,7 +201,7 @@ def _run_vina_engine(
     try:
         from vina import Vina
 
-        v = Vina(sf_name="vina", verbosity=0)
+        v = Vina(sf_name="vina", cpu=VINA_CPU_THREADS, verbosity=0)
         v.set_receptor(receptor_pdbqt)
         v.set_ligand_from_file(ligand_pdbqt)
         v.compute_vina_maps(
@@ -236,11 +239,14 @@ def _run_vina_engine(
             "--size_z", str(box.size_z),
             "--exhaustiveness", str(exhaustiveness),
             "--num_modes", str(num_modes),
+            "--cpu", str(VINA_CPU_THREADS),
             "--out", str(out_path),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
-            raise RuntimeError(f"AutoDock Vina CLI failed: {res.stderr or res.stdout}")
+            raise RuntimeError(
+                f"AutoDock Vina CLI failed (exit code {res.returncode}): {res.stderr or res.stdout}"
+            )
 
         energies = _parse_vina_cli_table(res.stdout)
         poses_pdbqt = out_path.read_text(encoding="utf-8")
@@ -289,6 +295,7 @@ def _score_native_in_place(session_id: str, box: GridBox) -> Optional[float]:
                     "--size_x", str(box.size_x),
                     "--size_y", str(box.size_y),
                     "--size_z", str(box.size_z),
+                    "--cpu", str(VINA_CPU_THREADS),
                     "--local_only",
                 ],
                 capture_output=True,
